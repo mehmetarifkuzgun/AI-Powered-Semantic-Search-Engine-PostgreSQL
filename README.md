@@ -392,4 +392,4 @@ For issues and questions:
 
 ---
 
-**Happy searching! 🔍✨**
+**Happy searching for you all!
