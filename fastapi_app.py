@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, field_validator
 import uvicorn
 
 from semantic_search import SemanticSearchEngine, create_search_engine
@@ -35,7 +35,8 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing semantic search engine...")
     try:
         embedding_model = os.getenv('EMBEDDING_MODEL', 'sentence-transformers/all-MiniLM-L6-v2')
-        model_type = 'openai' if embedding_model.lower() == 'openai' else 'sentence-transformers'
+        model_type = {'openai': 'openai', 'hashing': 'hashing', 'offline': 'hashing'}.get(
+            embedding_model.lower(), 'sentence-transformers')
         search_engine = create_search_engine(model_type)
         logger.info("Semantic search engine initialized successfully")
     except Exception as e:
@@ -73,13 +74,15 @@ class SearchRequest(BaseModel):
     limit: Optional[int] = 5
     similarity_threshold: Optional[float] = 0.7
     
-    @validator('limit')
+    @field_validator('limit')
+    @classmethod
     def validate_limit(cls, v):
         if v is not None and (v < 1 or v > 50):
             raise ValueError('limit must be between 1 and 50')
         return v
     
-    @validator('similarity_threshold')
+    @field_validator('similarity_threshold')
+    @classmethod
     def validate_threshold(cls, v):
         if v is not None and (v < 0 or v > 1):
             raise ValueError('similarity_threshold must be between 0 and 1')
@@ -169,6 +172,7 @@ async def root():
                 box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
             }
             .search-box { 
+                box-sizing: border-box;
                 width: 100%; 
                 padding: 15px; 
                 font-size: 16px; 
@@ -347,7 +351,8 @@ async def root():
             async function performSearch() {
                 const query = document.getElementById('searchQuery').value.trim();
                 const limit = parseInt(document.getElementById('limitInput').value) || 5;
-                const threshold = parseFloat(document.getElementById('thresholdInput').value) || 0.7;
+                const parsedThreshold = parseFloat(document.getElementById('thresholdInput').value);
+                const threshold = Number.isNaN(parsedThreshold) ? 0.7 : parsedThreshold;  // 0 is a valid threshold
                 
                 if (!query) {
                     alert('Please enter a search query');
@@ -432,7 +437,7 @@ async def root():
                         body: JSON.stringify({ 
                             source_type: 'sample',
                             batch_size: 10,
-                            loader_kwargs: { num_articles: 20 }
+                            loader_kwargs: { num_articles: 10 }
                         })
                     });
                     
@@ -491,8 +496,9 @@ async def search_documents(request: SearchRequest,
     try:
         results = engine.search(
             query=request.query,
-            limit=request.limit or 5,
-            similarity_threshold=request.similarity_threshold or 0.7
+            # `is None`, not `or`: a threshold of 0.0 is a valid (match-everything) setting
+            limit=5 if request.limit is None else request.limit,
+            similarity_threshold=0.7 if request.similarity_threshold is None else request.similarity_threshold
         )
         
         search_time_ms = (time.time() - start_time) * 1000

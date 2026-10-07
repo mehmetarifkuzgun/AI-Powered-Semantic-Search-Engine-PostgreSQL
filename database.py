@@ -8,7 +8,7 @@ import logging
 from typing import Optional, List, Tuple
 from contextlib import contextmanager
 import psycopg2
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import RealDictCursor, Json
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
@@ -19,6 +19,14 @@ load_dotenv()
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def to_pgvector(embedding) -> str:
+    """Format an embedding as a pgvector text literal, e.g. ``[0.1,0.2]`` (use with ``%s::vector``).
+
+    psycopg2 would otherwise send a Python list as ``numeric[]``, which pgvector's operators reject.
+    """
+    return "[" + ",".join(repr(float(x)) for x in embedding) + "]"
 
 
 class DatabaseManager:
@@ -43,8 +51,12 @@ class DatabaseManager:
     def initialize_engine(self):
         """Initialize SQLAlchemy engine and session factory."""
         try:
+            url = self.database_url
+            if url.startswith("postgresql://"):
+                # SQLAlchemy 2.1 would otherwise pick psycopg (v3); this project uses psycopg2
+                url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
             self.engine = create_engine(
-                self.database_url,
+                url,
                 pool_size=10,
                 max_overflow=20,
                 pool_pre_ping=True
@@ -162,9 +174,10 @@ class DatabaseManager:
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         
-        -- Create index for vector similarity search
+        -- Approximate nearest-neighbour index. HNSW (pgvector >= 0.5) works on an empty table and
+        -- keeps good recall on small ones; ivfflat built on an empty table has no useful centroids.
         CREATE INDEX IF NOT EXISTS documents_embedding_idx 
-        ON documents USING ivfflat (embedding vector_cosine_ops);
+        ON documents USING hnsw (embedding vector_cosine_ops);
         
         -- Create text search index
         CREATE INDEX IF NOT EXISTS documents_content_idx 
@@ -190,6 +203,20 @@ class DatabaseManager:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(create_table_sql)
+                    # CREATE TABLE IF NOT EXISTS silently keeps an old table: make sure its vector
+                    # size matches the current embedding model instead of failing later on insert.
+                    cur.execute("""
+                        SELECT atttypmod FROM pg_attribute
+                        WHERE attrelid = 'documents'::regclass AND attname = 'embedding'
+                    """)
+                    existing_dim = cur.fetchone()['atttypmod']
+                    if existing_dim != embedding_dimension:
+                        conn.rollback()
+                        raise ValueError(
+                            f"documents.embedding is vector({existing_dim}) but the current embedding "
+                            f"model produces {embedding_dimension} dimensions. Drop the table "
+                            f"(DROP TABLE documents;) or use a matching model."
+                        )
                     conn.commit()
                     logger.info("Documents table created successfully")
         except Exception as e:
@@ -213,14 +240,16 @@ class DatabaseManager:
         """
         insert_sql = """
         INSERT INTO documents (title, content, source, metadata, embedding)
-        VALUES (%s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s::vector)
         RETURNING id;
         """
         
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(insert_sql, (title, content, source, metadata, embedding))
+                    cur.execute(insert_sql, (title, content, source,
+                                             Json(metadata) if metadata is not None else None,
+                                             to_pgvector(embedding)))
                     doc_id = cur.fetchone()['id']
                     conn.commit()
                     logger.debug(f"Document inserted with ID: {doc_id}")
@@ -249,20 +278,21 @@ class DatabaseManager:
             content,
             source,
             metadata,
-            1 - (embedding <=> %s) as similarity_score
+            1 - (embedding <=> %(q)s::vector) AS similarity_score
         FROM documents
-        WHERE 1 - (embedding <=> %s) > %s
-        ORDER BY embedding <=> %s
-        LIMIT %s;
+        WHERE 1 - (embedding <=> %(q)s::vector) > %(threshold)s
+        ORDER BY embedding <=> %(q)s::vector
+        LIMIT %(limit)s;
         """
         
         try:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(search_sql, (
-                        query_embedding, query_embedding, threshold, 
-                        query_embedding, limit
-                    ))
+                    cur.execute(search_sql, {
+                        'q': to_pgvector(query_embedding),
+                        'threshold': threshold,
+                        'limit': limit,
+                    })
                     results = cur.fetchall()
                     return [dict(row) for row in results]
         except Exception as e:

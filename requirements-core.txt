@@ -1,0 +1,11 @@
+# Everything except the embedding backends (see requirements.txt). Ranges; "tested" = Python 3.12.
+psycopg2-binary>=2.9,<3        # tested 2.9.13
+sqlalchemy>=2.0,<2.2           # tested 2.1.4
+fastapi>=0.103                 # tested 0.142.4 (needs pydantic v2)
+uvicorn>=0.23                  # tested 0.54.0
+streamlit>=1.28                # tested 1.65.0
+python-dotenv>=1.0
+numpy>=1.24                    # tested 2.5.3
+pandas>=2.0                    # tested 3.0.6
+plotly>=5.15                   # tested 7.1.0
+requests>=2.31

@@ -22,20 +22,21 @@ class SemanticSearchEngine:
     """
     
     def __init__(self, 
-                 embedding_model_type: str = "sentence-transformers",
+                 embedding_model_type: Optional[str] = None,
                  db_manager: Optional[DatabaseManager] = None):
         """
         Initialize the semantic search engine.
         
         Args:
-            embedding_model_type (str): Type of embedding model to use
+            embedding_model_type (str, optional): "sentence-transformers", "openai" or "hashing";
+                defaults to what the EMBEDDING_MODEL environment variable selects
             db_manager (DatabaseManager, optional): Database manager instance
         """
         self.embedding_generator = get_embedding_generator(embedding_model_type)
         self.db_manager = db_manager or get_db_manager()
         self.embedding_dimension = self.embedding_generator.get_dimension()
         
-        logger.info(f"Semantic search engine initialized with {embedding_model_type} embeddings")
+        logger.info(f"Semantic search engine initialized with {type(self.embedding_generator).__name__}")
         logger.info(f"Embedding dimension: {self.embedding_dimension}")
     
     def initialize_database(self):
@@ -275,7 +276,7 @@ class SemanticSearchEngine:
             raise
 
 
-def create_search_engine(embedding_model_type: str = "sentence-transformers") -> SemanticSearchEngine:
+def create_search_engine(embedding_model_type: Optional[str] = None) -> SemanticSearchEngine:
     """
     Create and initialize a semantic search engine.
     

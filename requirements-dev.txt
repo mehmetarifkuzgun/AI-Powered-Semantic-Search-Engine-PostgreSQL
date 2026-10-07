@@ -1,0 +1,5 @@
+# Tests need no model download: they use the offline "hashing" embedding backend
+-r requirements-core.txt
+pytest>=8
+httpx>=0.24
+playwright>=1.40   # only for regenerating the README screenshot
