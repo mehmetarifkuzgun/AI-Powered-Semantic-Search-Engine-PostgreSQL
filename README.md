@@ -81,18 +81,6 @@ pytest -q          # needs PostgreSQL + pgvector (POSTGRES_* env vars); DB tests
 - `docker-compose.yml` and the pgvector image were not run in the environment this was prepared in (CI uses the same image); `setup.py`/`start.bat` were not re-tested.
 - Embeddings for OpenAI require `OPENAI_API_KEY` and were not exercised.
 
-## Fixes made while preparing this repo for publication
-
-Found by running everything against a real PostgreSQL + pgvector:
-
-1. **Search crashed** (`operator does not exist: vector <=> numeric[]`): embeddings were sent as plain Python lists, which psycopg2 turns into `numeric[]`. They are now sent as pgvector text literals with an explicit `::vector` cast.
-2. **Document inserts with metadata would have failed** (a `dict` is not a psycopg2 parameter); metadata is now wrapped as JSON.
-3. **`similarity_threshold: 0` was silently replaced by 0.7** (`value or default`) in the API and the web UI.
-4. **IVFFlat index on an empty table** → replaced by HNSW; added the vector-dimension check.
-5. SQLAlchemy 2.1 defaults `postgresql://` to psycopg v3 → the URL is normalised to `postgresql+psycopg2://`.
-6. The engine ignored `EMBEDDING_MODEL` unless it was passed explicitly; `fastapi_app.py` used deprecated pydantic-v1 validators; the UI's *Load Sample Data* created duplicate rows (20 articles from 10) and its search box overflowed its card.
-7. **Security/housekeeping:** a committed **`.env`** and committed `.pyc` files were removed from the tree (git history still contains them — **rotate any credential that was ever in that `.env`**), `.env.example` (which the old README referenced but did not exist) and `.gitignore` added; dependency pins replaced by tested ranges; unused `datasets`/`pgvector` Python packages dropped.
-
 ## License
 
 No license file is included yet — add one before reusing the code.
