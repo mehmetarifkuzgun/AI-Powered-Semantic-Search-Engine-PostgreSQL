@@ -4,6 +4,9 @@ Supports both local models (sentence-transformers) and OpenAI embeddings.
 """
 
 import os
+import re
+import math
+import zlib
 import logging
 from typing import List, Union, Optional
 import numpy as np
@@ -278,6 +281,59 @@ class OpenAIEmbedding(EmbeddingGenerator):
         return text
 
 
+class HashingEmbedding(EmbeddingGenerator):
+    """
+    Offline, dependency-free *lexical* embeddings (feature hashing).
+
+    Hashes word unigrams and bigrams (light suffix stripping, stop-words removed) into a
+    fixed-size signed vector with sub-linear term weighting, then L2-normalises it.
+    Needs no model download and no API key, so it is deterministic and fast: meant for
+    tests, CI and offline demos. It only captures word overlap, **not** meaning -- use
+    sentence-transformers or OpenAI for real semantic search.
+    """
+
+    _STOP = frozenset(
+        "a an and are as at be by for from has have in into is it its of on or that the to was "
+        "were will with this these those their they than then there which who whom".split()
+    )
+
+    def __init__(self, dimension: int = 384):
+        self._dimension = dimension
+
+    @staticmethod
+    def _stem(token: str) -> str:
+        for suffix in ("ing", "ies", "es", "ed", "s"):
+            if token.endswith(suffix) and len(token) - len(suffix) >= 4:
+                return token[: -len(suffix)]
+        return token
+
+    def _features(self, text: str) -> List[str]:
+        tokens = [self._stem(t) for t in re.findall(r"[a-z0-9]+", (text or "").lower())]
+        tokens = [t for t in tokens if t not in self._STOP]
+        return tokens + [f"{a}_{b}" for a, b in zip(tokens, tokens[1:])]
+
+    def generate_embedding(self, text: str) -> List[float]:
+        vec = np.zeros(self._dimension, dtype=np.float64)
+        counts: dict = {}
+        for feat in self._features(text):
+            counts[feat] = counts.get(feat, 0) + 1
+        for feat, n in counts.items():
+            h = zlib.crc32(feat.encode("utf-8"))
+            sign = 1.0 if (h >> 31) & 1 else -1.0
+            vec[h % self._dimension] += sign * (1.0 + math.log(n))
+        norm = np.linalg.norm(vec)
+        if norm == 0:                       # empty / all-stop-word text
+            vec[0] = 1.0
+            norm = 1.0
+        return (vec / norm).tolist()
+
+    def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
+        return [self.generate_embedding(t) for t in texts]
+
+    def get_dimension(self) -> int:
+        return self._dimension
+
+
 class EmbeddingFactory:
     """Factory class to create embedding generators based on configuration."""
     
@@ -296,6 +352,9 @@ class EmbeddingFactory:
             model_name = os.getenv('EMBEDDING_MODEL', 'sentence-transformers/all-MiniLM-L6-v2')
             return SentenceTransformerEmbedding(model_name)
         
+        elif model_type.lower() in ["hashing", "offline"]:
+            return HashingEmbedding(int(os.getenv('EMBEDDING_DIMENSION', '384')))
+
         elif model_type.lower() in ["openai", "api"]:
             api_key = os.getenv('OPENAI_API_KEY')
             return OpenAIEmbedding(api_key=api_key)
@@ -319,6 +378,8 @@ def get_embedding_generator(model_type: Optional[str] = None) -> EmbeddingGenera
         embedding_model = os.getenv('EMBEDDING_MODEL', 'sentence-transformers/all-MiniLM-L6-v2')
         if embedding_model.lower() == 'openai':
             model_type = 'openai'
+        elif embedding_model.lower() in ('hashing', 'offline'):
+            model_type = 'hashing'
         else:
             model_type = 'sentence-transformers'
     

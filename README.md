@@ -1,395 +1,98 @@
-# AI-Powered Semantic Search with PostgreSQL and pgvector
+# Semantic Search with PostgreSQL + pgvector
 
-A complete semantic search engine implementation using PostgreSQL with the pgvector extension, supporting both local and OpenAI embeddings for document similarity search.
+[![CI](https://github.com/mehmetarifkuzgun/AI-Powered-Semantic-Search-Engine-PostgreSQL/actions/workflows/ci.yml/badge.svg)](https://github.com/mehmetarifkuzgun/AI-Powered-Semantic-Search-Engine-PostgreSQL/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.11%20|%203.12-blue)
 
-## 🌟 Features
+A small, readable semantic-search stack: documents are embedded (local **sentence-transformers**, **OpenAI**, or an offline test backend), stored in **PostgreSQL with a `vector` column and an HNSW index**, and queried by cosine similarity through a **FastAPI** REST API + web page and a **Streamlit** app.
 
-- **Vector Similarity Search**: Uses PostgreSQL pgvector extension for efficient cosine similarity search
-- **Multiple Embedding Models**: Support for both local models (sentence-transformers) and OpenAI embeddings
-- **Document Management**: Load documents from various sources (JSON, text files, sample data)
-- **Web Interfaces**: Both FastAPI (REST API + web UI) and Streamlit applications
-- **Batch Processing**: Efficient batch embedding generation and database insertion
-- **Real-time Search**: Fast semantic search with configurable similarity thresholds
-- **Database Management**: Built-in tools for database initialization and management
+![FastAPI search UI](docs/img/fastapi-search.png)
 
-## 🏗️ Architecture
+> **How this screenshot was made — please read.** It is a real run of the FastAPI app against a real PostgreSQL 16 + pgvector 0.6 database with the 10 bundled sample articles. The sandbox it was produced in cannot download Hugging Face models, so it uses the repo's **offline `hashing` backend** (`EMBEDDING_MODEL=hashing`): a deterministic *lexical* embedding (hashed word/bigram features). It ranks by word overlap, **not meaning**, which is why the scores are low and why *Min Similarity* is set to 0.1 instead of the default 0.7. With `sentence-transformers/all-MiniLM-L6-v2` (the default) you get genuinely semantic matches; that path is implemented but was **not run** for these screenshots.
 
-```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   Web Interface │    │  Embedding       │    │   PostgreSQL    │
-│  (FastAPI/      │◄──►│  Generation      │◄──►│   + pgvector    │
-│   Streamlit)    │    │  (Local/OpenAI)  │    │                 │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
-         │                        │                       │
-         │                        │                       │
-         ▼                        ▼                       ▼
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│  Document       │    │  Vector          │    │  Similarity     │
-│  Processing     │    │  Storage         │    │  Search         │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
+## Architecture
+
+```mermaid
+flowchart LR
+    D[Documents<br/>JSON / text / sample] --> E["Embedding backend<br/>sentence-transformers · OpenAI · hashing"]
+    E -->|"vector(N)"| P[("PostgreSQL + pgvector<br/>documents table · HNSW cosine index")]
+    Q[Query text] --> E2[same backend] -->|"embedding <=> query"| P
+    P --> R["Ranked results<br/>similarity = 1 − cosine distance"]
+    R --> API[FastAPI REST + web UI]
+    R --> ST[Streamlit app]
 ```
 
-## 📋 Prerequisites
+| File | Role |
+|---|---|
+| `embeddings.py` | `EmbeddingGenerator` interface; `SentenceTransformerEmbedding`, `OpenAIEmbedding`, `HashingEmbedding`; factory driven by `EMBEDDING_MODEL` |
+| `database.py` | Connection handling, table + index creation, insert, similarity search (pgvector `<=>` cosine distance), dimension check |
+| `semantic_search.py` | `SemanticSearchEngine`: load → embed in batches → insert; search; stats |
+| `document_loader.py` | Sample / JSON / text-directory loaders |
+| `fastapi_app.py` | REST API (`/api/search`, `/api/documents`, `/api/index`, `/api/stats`, `/health`) + single-page UI |
+| `streamlit_app.py` | Streamlit front end with Plotly charts |
+| `setup.py`, `demo.py` | Interactive setup check and a console walkthrough |
 
-1. **PostgreSQL** (version 12+) with pgvector extension installed
-2. **Python** 3.8 or higher
-3. **Optional**: OpenAI API key for OpenAI embeddings
-
-### Installing pgvector
-
-**Ubuntu/Debian:**
-```bash
-sudo apt install postgresql-contrib
-sudo apt install build-essential git
-git clone --branch v0.5.1 https://github.com/pgvector/pgvector.git
-cd pgvector
-make
-sudo make install
-```
-
-**macOS (with Homebrew):**
-```bash
-brew install pgvector
-```
-
-**Windows:**
-See [pgvector documentation](https://github.com/pgvector/pgvector#installation) for Windows installation instructions.
-
-## 🚀 Quick Start
-
-### 1. Clone and Setup
+## Quick start
 
 ```bash
-# Clone the repository or copy the files
-cd postgresql
-
-# Install Python dependencies
+git clone https://github.com/mehmetarifkuzgun/AI-Powered-Semantic-Search-Engine-PostgreSQL.git
+cd AI-Powered-Semantic-Search-Engine-PostgreSQL
+docker compose up -d db                 # PostgreSQL 16 with pgvector preinstalled (or install pgvector yourself)
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-
-# Copy and configure environment file
-cp .env.example .env
-# Edit .env with your PostgreSQL credentials
+cp .env.example .env                    # adjust credentials if you changed docker-compose.yml
+python setup.py                         # checks the connection, enables the extension, creates the table
+python fastapi_app.py                   # http://127.0.0.1:8000   (or: streamlit run streamlit_app.py)
 ```
 
-### 2. Configure Environment
+In the web UI click **Load Sample Data** (10 articles), then search. No GPU or API key needed for the default local model (the first run downloads the model, roughly 90 MB). To try the pipeline with **no download at all**, set `EMBEDDING_MODEL=hashing` and lower *Min Similarity*.
 
-Edit `.env` file with your settings:
-
-```bash
-# PostgreSQL Configuration
-DATABASE_URL=postgresql://username:password@localhost:5432/semantic_search_db
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
-POSTGRES_DB=semantic_search_db
-POSTGRES_USER=username
-POSTGRES_PASSWORD=password
-
-# OpenAI API (optional)
-OPENAI_API_KEY=your_openai_api_key_here
-
-# Model Configuration
-EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
-EMBEDDING_DIMENSION=384
-```
-
-### 3. Initialize Database
-
-```bash
-python setup.py
-```
-
-This script will:
-- Check Python version and dependencies
-- Test PostgreSQL connection
-- Initialize database with pgvector extension
-- Create required tables and indexes
-- Test embedding generation
-
-### 4. Run the Application
-
-**Option A: FastAPI Web Interface**
-```bash
-python fastapi_app.py
-```
-Then open http://127.0.0.1:8000 in your browser.
-
-**Option B: Streamlit Interface**
-```bash
-streamlit run streamlit_app.py
-```
-
-**Option C: Python Script**
-```bash
-python semantic_search.py
-```
-
-## 📁 Project Structure
-
-```
-postgresql/
-├── README.md                 # This file
-├── requirements.txt          # Python dependencies
-├── .env.example             # Environment configuration template
-├── setup.py                 # Setup and initialization script
-├── database.py              # Database connection and management
-├── embeddings.py            # Embedding generation (local/OpenAI)
-├── document_loader.py       # Document loading utilities
-├── semantic_search.py       # Core search engine logic
-├── fastapi_app.py          # FastAPI web application
-└── streamlit_app.py        # Streamlit web application
-```
-
-## 🎯 Usage Examples
-
-### Basic Search Engine Usage
+### Use it from Python
 
 ```python
 from semantic_search import create_search_engine
 
-# Initialize search engine
-engine = create_search_engine()
-
-# Load sample documents
-results = engine.load_and_index_documents("sample", num_articles=50)
-print(f"Indexed {results['indexed_documents']} documents")
-
-# Perform semantic search
-search_results = engine.search(
-    query="artificial intelligence and machine learning",
-    limit=5,
-    similarity_threshold=0.7
-)
-
-for result in search_results:
-    print(f"Title: {result['title']}")
-    print(f"Similarity: {result['similarity_score']:.3f}")
-    print(f"Content: {result['content_preview']}")
-    print("-" * 50)
+engine = create_search_engine()                       # backend chosen by EMBEDDING_MODEL
+engine.load_and_index_documents("sample", num_articles=10)
+for hit in engine.search("battery storage for renewable energy", limit=3, similarity_threshold=0.1):
+    print(hit["similarity_score"], hit["title"])
 ```
 
-### Loading Custom Documents
+### Design notes
 
-```python
-# From JSON file
-engine.load_and_index_documents(
-    "json", 
-    file_path="path/to/documents.json"
-)
+- **Similarity** is `1 − cosine_distance`; `similarity_threshold` filters on it. Good thresholds depend on the model (MiniLM scores differ from OpenAI or the hashing backend) — tune per model.
+- **HNSW, not IVFFlat.** An IVFFlat index built on an empty or tiny table has no useful centroids and gives poor recall; HNSW (pgvector ≥ 0.5) behaves well from the first row.
+- **Vector size is checked** when the table is created: switching to a model with a different dimension raises a clear error instead of failing on insert.
+- Metadata is stored as `JSONB`; the app and database use the same `EMBEDDING_DIMENSION`.
 
-# From text files directory
-engine.load_and_index_documents(
-    "text", 
-    directory_path="path/to/text/files",
-    file_extension=".txt"
-)
-
-# Add single document
-doc_id = engine.add_document(
-    title="Custom Document",
-    content="This is a custom document for testing...",
-    source="manual",
-    metadata={"category": "test", "tags": ["custom"]}
-)
-```
-
-### Advanced Search Options
-
-```python
-# Search with custom parameters
-results = engine.search(
-    query="climate change environmental impact",
-    limit=10,
-    similarity_threshold=0.6  # Lower threshold for more results
-)
-
-# Get database statistics
-stats = engine.get_database_stats()
-print(f"Total documents: {stats['total_documents']}")
-print(f"Embedding dimension: {stats['embedding_dimension']}")
-```
-
-## 🌐 Web Interfaces
-
-### FastAPI Interface
-
-The FastAPI application provides:
-- **REST API endpoints** for programmatic access
-- **Interactive web UI** for manual testing
-- **Automatic API documentation** at `/docs`
-- **Real-time search** with visual similarity scores
-
-**Key Endpoints:**
-- `GET /`: Web interface
-- `POST /api/search`: Perform semantic search
-- `POST /api/documents`: Add single document
-- `POST /api/index`: Batch index documents
-- `GET /api/stats`: Database statistics
-
-### Streamlit Interface
-
-The Streamlit app offers:
-- **Interactive sidebar** with database stats
-- **Visual similarity charts** using Plotly
-- **Document management tools**
-- **Real-time embedding visualization**
-- **Sample data loading interface**
-
-## 🔧 Configuration Options
-
-### Embedding Models
-
-**Local Models (Sentence Transformers):**
-```bash
-EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2  # Default, 384 dims
-EMBEDDING_MODEL=sentence-transformers/all-mpnet-base-v2  # Higher quality, 768 dims
-EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2  # Multilingual
-```
-
-**OpenAI Models:**
-```bash
-EMBEDDING_MODEL=openai
-OPENAI_API_KEY=your_api_key_here
-```
-
-### Database Configuration
+## Tests
 
 ```bash
-# Connection settings
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
-POSTGRES_DB=semantic_search_db
-POSTGRES_USER=username
-POSTGRES_PASSWORD=password
-
-# Or use full connection URL
-DATABASE_URL=postgresql://user:pass@host:port/db
+pip install -r requirements-dev.txt
+pytest -q          # needs PostgreSQL + pgvector (POSTGRES_* env vars); DB tests are skipped otherwise
 ```
 
-## 📊 Performance Considerations
+22 tests, no model download or API key (they use the `hashing` backend): embedding properties; **top-1 retrieval for five queries against the real database**, threshold filtering, JSONB round-trip, HNSW index presence, dimension-mismatch error; FastAPI endpoints incl. validation; and a Streamlit render smoke test. Each session creates and drops its own throw-away database. CI runs them against a `pgvector/pgvector:pg16` service container on Python 3.11/3.12.
 
-### Indexing Performance
-- **Batch size**: Adjust based on available memory (10-50 documents per batch)
-- **Embedding dimension**: Lower dimensions = faster search, higher = better accuracy
-- **Hardware**: GPU acceleration available for sentence-transformers models
+## Known limitations
 
-### Search Performance
-- **Vector indexes**: Automatically created for efficient similarity search
-- **Similarity threshold**: Higher thresholds = fewer results, faster queries
-- **Result limit**: Limit results to improve response time
+- **Semantic quality was not evaluated.** There is no retrieval benchmark; tests check pipeline correctness (and lexical top-1 on 5 hand-written queries), not the relevance of MiniLM/OpenAI embeddings.
+- **The sample corpus is tiny:** 10 distinct hand-written articles. Requesting more (`num_articles > 10`) produces *copies* titled "… - Update N", so results contain duplicates; use `document_loader` with your own JSON/text data for anything real.
+- Search is a plain vector scan with a threshold filter (post-filtering with HNSW can return fewer than `limit` rows); no hybrid keyword + vector ranking, re-ranking, chunking of long documents, or authentication (CORS is `*`).
+- `docker-compose.yml` and the pgvector image were not run in the environment this was prepared in (CI uses the same image); `setup.py`/`start.bat` were not re-tested.
+- Embeddings for OpenAI require `OPENAI_API_KEY` and were not exercised.
 
-### Database Optimization
+## Fixes made while preparing this repo for publication
 
-```sql
--- Tune pgvector index parameters
-CREATE INDEX ON documents USING ivfflat (embedding vector_cosine_ops) 
-WITH (lists = 100);
+Found by running everything against a real PostgreSQL + pgvector:
 
--- For better recall with more memory usage
-SET ivfflat.probes = 10;
-```
+1. **Search crashed** (`operator does not exist: vector <=> numeric[]`): embeddings were sent as plain Python lists, which psycopg2 turns into `numeric[]`. They are now sent as pgvector text literals with an explicit `::vector` cast.
+2. **Document inserts with metadata would have failed** (a `dict` is not a psycopg2 parameter); metadata is now wrapped as JSON.
+3. **`similarity_threshold: 0` was silently replaced by 0.7** (`value or default`) in the API and the web UI.
+4. **IVFFlat index on an empty table** → replaced by HNSW; added the vector-dimension check.
+5. SQLAlchemy 2.1 defaults `postgresql://` to psycopg v3 → the URL is normalised to `postgresql+psycopg2://`.
+6. The engine ignored `EMBEDDING_MODEL` unless it was passed explicitly; `fastapi_app.py` used deprecated pydantic-v1 validators; the UI's *Load Sample Data* created duplicate rows (20 articles from 10) and its search box overflowed its card.
+7. **Security/housekeeping:** a committed **`.env`** and committed `.pyc` files were removed from the tree (git history still contains them — **rotate any credential that was ever in that `.env`**), `.env.example` (which the old README referenced but did not exist) and `.gitignore` added; dependency pins replaced by tested ranges; unused `datasets`/`pgvector` Python packages dropped.
 
-## 🐛 Troubleshooting
+## License
 
-### Common Issues
-
-**1. pgvector extension not found:**
-```bash
-ERROR: extension "vector" is not available
-```
-Solution: Install pgvector extension for PostgreSQL.
-
-**2. Python module import errors:**
-```bash
-ModuleNotFoundError: No module named 'sentence_transformers'
-```
-Solution: Install requirements: `pip install -r requirements.txt`
-
-**3. Database connection failed:**
-```bash
-psycopg2.OperationalError: connection failed
-```
-Solution: Check PostgreSQL service, credentials, and network connectivity.
-
-**4. Out of memory during embedding generation:**
-```bash
-RuntimeError: CUDA out of memory
-```
-Solution: Reduce batch size or use CPU instead of GPU.
-
-### Performance Issues
-
-**Slow search queries:**
-- Check if vector indexes are created
-- Reduce similarity threshold
-- Limit number of results
-- Consider using faster embedding models
-
-**High memory usage:**
-- Reduce batch size during indexing
-- Use smaller embedding models
-- Implement connection pooling
-
-## 🔒 Security Considerations
-
-- **Environment Variables**: Keep credentials in `.env` file, never commit to version control
-- **Database Access**: Use least-privilege database users
-- **API Security**: Add authentication for production deployments
-- **Input Validation**: Sanitize user inputs to prevent injection attacks
-
-## 🚀 Deployment
-
-### Docker Deployment
-
-Create `Dockerfile`:
-```dockerfile
-FROM python:3.9-slim
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-
-COPY . .
-EXPOSE 8000
-
-CMD ["python", "fastapi_app.py"]
-```
-
-### Production Considerations
-
-- Use production ASGI server (gunicorn + uvicorn)
-- Set up SSL/TLS certificates
-- Configure proper logging
-- Implement health checks
-- Set up monitoring and alerting
-
-## 📚 Further Reading
-
-- [pgvector Documentation](https://github.com/pgvector/pgvector)
-- [Sentence Transformers Documentation](https://www.sbert.net/)
-- [FastAPI Documentation](https://fastapi.tiangolo.com/)
-- [Streamlit Documentation](https://docs.streamlit.io/)
-- [PostgreSQL Vector Operations](https://www.postgresql.org/docs/current/functions-array.html)
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## 🆘 Support
-
-For issues and questions:
-1. Check the troubleshooting section
-2. Review PostgreSQL and pgvector logs
-3. Test with sample data first
-4. Verify environment configuration
-
----
-
-**Happy searching for you all!
+No license file is included yet — add one before reusing the code.
